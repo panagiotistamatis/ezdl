@@ -78,7 +78,7 @@ setuptools.setup(
         "humanfriendly==10.0",
         "hydra-core==1.3.2",
         "idna==3.6",
-        "imagededup==0.3.2",
+        "imagededup==0.3.3.post2",
         "imagesize==1.4.1",
         "Jinja2==3.1.2",
         "jmespath==1.0.1",
