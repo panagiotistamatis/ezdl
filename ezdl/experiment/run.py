@@ -63,7 +63,7 @@ class Run:
             self.seg_trainer = trainer_class(
                 project_name=self.params['experiment']['name'],
                 group_name=self.params['experiment']['group'],
-                ckpt_root_dir=self.params['experiment']['tracking_dir'] or 'experiments',
+                ckpt_root_dir=self.params['experiment']['tracking_dir'] or os.path.abspath('experiments'),
             )
             self.dataset = self.seg_trainer.init_dataset \
                     (params['dataset_interface'], dataset_params=deepcopy(self.dataset_params))
@@ -99,7 +99,7 @@ class Run:
             self.seg_trainer = trainer_class(
                 project_name=self.params['experiment']['name'],
                 group_name=self.params['experiment']['group'],
-                ckpt_root_dir=self.params['experiment']['tracking_dir'] or 'experiments',
+                ckpt_root_dir=self.params['experiment']['tracking_dir'] or os.path.abspath('experiments'),
             )
             self.dataset = self.seg_trainer.init_dataset \
                 (logger_run.get_params()['dataset_interface'], dataset_params=deepcopy(self.dataset_params))
@@ -128,12 +128,50 @@ class Run:
         best_metric_val = self.seg_trainer.best_metric.item()
         if 'test' in self.phases:
             test_metrics = self.seg_trainer.test(**self.test_params, test_phase_callbacks=self.test_callbacks)
+            self._save_test_results(test_metrics, best_metric_val)
 
         if 'inference' in self.phases:
             inference(self.seg_trainer, self.run_params, self.dataset)
         # metric = self.seg_trainer.best_metric.item()
         logger.info(f"Best metric: {best_metric_val}")
         return best_metric_val
+
+    def _save_test_results(self, test_metrics, best_metric_val):
+        """Save test results to CSV file automatically."""
+        import csv
+        results_path = os.path.join(os.path.abspath('.'), 'test_results.csv')
+        file_exists = os.path.exists(results_path)
+
+        # Get experiment info
+        exp_name = self.params.get('experiment', {}).get('name', '')
+        group = self.params.get('experiment', {}).get('group', '')
+        model = self.params.get('model', {}).get('name', '')
+        backbone = self.params.get('model', {}).get('backbone', '')
+        ds = self.params.get('dataset_interface', '')
+        dataset = ds.get('name', '') if isinstance(ds, dict) else str(ds)
+
+        # Convert tensor values to floats
+        row = {
+            'dataset': dataset,
+            'experiment': exp_name,
+            'group': group,
+            'model': model,
+            'backbone': backbone,
+            'best_metric': best_metric_val,
+        }
+        for k, v in test_metrics.items():
+            try:
+                row[k] = float(v)
+            except (TypeError, ValueError):
+                row[k] = str(v)
+
+        with open(results_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=row.keys())
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+
+        logger.info(f"Test results saved to {results_path}")
                 
     def upload_emissions(self):
         self.carbon_tracker.stop()

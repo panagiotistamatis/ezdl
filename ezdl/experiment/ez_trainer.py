@@ -113,6 +113,21 @@ from ezdl.metrics import get_metric_titles_components_mapping
 logger = get_logger(__name__)
 
 
+
+class DummySGLogger:
+    """Dummy logger for when no logger is configured"""
+    def __getattr__(self, name):
+        def dummy_method(*args, **kwargs):
+            pass
+        return dummy_method
+    
+    def local_dir(self):
+        return "./outputs"
+    
+    @property
+    def _local_dir(self):
+        return "./outputs"
+
 class EzTrainer:
     def __init__(
         self,
@@ -157,7 +172,7 @@ class EzTrainer:
         )
         self.ema = None
         self.ema_model = None
-        self.sg_logger = None
+        self.sg_logger = DummySGLogger()
         self.update_param_groups = None
         self.criterion = None
         self.training_params = None
@@ -2010,15 +2025,15 @@ class EzTrainer:
             progress_bar_data_loader.write(
                 "==========================================================="
             )
-            sg_trainer_utils.display_epoch_summary(
-                epoch=context.epoch,
-                n_digits=4,
-                monitored_values_dict={
-                    "Train": self.train_monitored_values,
-                    "Validation": self.valid_monitored_values,
-                    "Test": self.test_monitored_values,
-                },
-            )
+            # sg_trainer_utils.display_epoch_summary(
+            # epoch=context.epoch,
+            # n_digits=4,
+            # monitored_values_dict={
+            # "Train": self.train_monitored_values,
+            # "Validation": self.valid_monitored_values,
+            # "Test": self.test_monitored_values,
+            # },
+            # )
             progress_bar_data_loader.write(
                 "==========================================================="
             )
@@ -2064,13 +2079,28 @@ class EzTrainer:
         """
         Restore best parameters after the training
         """
-        self.checkpoint = load_checkpoint_to_model(
-            ckpt_local_path=self.checkpoints_dir_path + "/ckpt_best.pth",
-            load_backbone=False,
-            net=self.net,
-            strict=StrictLoad.ON.value,
-            load_weights_only=True,
-        )
+        import torch as _torch
+        ckpt_path = self.checkpoints_dir_path + "/ckpt_best.pth"
+        checkpoint = _torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        state_dict = checkpoint.get("net", checkpoint)
+
+        # Handle module. prefix mismatch between checkpoint and model
+        model_keys = set(self.net.state_dict().keys())
+        ckpt_keys = set(state_dict.keys())
+
+        if model_keys != ckpt_keys:
+            # Check if adding 'module.' prefix fixes it
+            prefixed = {"module." + k: v for k, v in state_dict.items()}
+            if set(prefixed.keys()) == model_keys:
+                state_dict = prefixed
+            else:
+                # Check if removing 'module.' prefix fixes it
+                stripped = {k.replace("module.", "", 1): v for k, v in state_dict.items() if k.startswith("module.")}
+                if set(stripped.keys()) == model_keys:
+                    state_dict = stripped
+
+        self.net.load_state_dict(state_dict)
+        self.checkpoint = checkpoint
 
     def _prep_for_test(
         self,
@@ -2270,9 +2300,19 @@ class EzTrainer:
             sg_logger = core_utils.get_param(self.training_params, "sg_logger")
 
             if sg_logger is None:
-                raise RuntimeError(
-                    "logger must be defined in experiment params (see default_training_params)"
+                # Use BaseLogger to ensure checkpoints are saved to disk
+                import warnings
+                warnings.warn("No logger defined in config, using BaseLogger for local checkpoint saving")
+                self.sg_logger = BaseLogger(
+                    project_name=self.project_name,
+                    experiment_name=self.group_name or '',
+                    storage_location=self.model_checkpoints_location,
+                    resumed=self.load_checkpoint,
+                    training_params=self.training_params,
+                    checkpoints_dir_path=self.checkpoints_dir_path,
                 )
+                self.checkpoints_dir_path = self.sg_logger.local_dir()
+                return
 
             if isinstance(sg_logger, AbstractSGLogger):
                 self.sg_logger = sg_logger
@@ -2344,7 +2384,8 @@ class EzTrainer:
         if self.phase_callbacks is None:
             self.phase_callbacks = []
         self.phase_callback_handler = CallbackHandler(self.phase_callbacks)
-        self.sg_logger.add_config(config=in_params)
+        if self.sg_logger is not None:
+            self.sg_logger.add_config(config=in_params)
 
     def _get_hyper_param_config(self):
         """

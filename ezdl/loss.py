@@ -207,6 +207,77 @@ class AuxiliaryLoss(ComposedLoss):
         return loss, torch.cat((loss.unsqueeze(0), task_loss.unsqueeze(0), aux_loss.unsqueeze(0))).detach()
 
 
+class FocalTverskyLoss(nn.Module):
+    """
+    Focal Tversky Loss (Abraham & Khan, 2018 — arXiv:1810.07842).
+
+    Per-class Tversky Index computed on softmax probabilities (soft TP/FP/FN),
+    averaged over classes, then raised to 1/gamma for focal-style focusing.
+
+        TI_c   = TP_c / (TP_c + alpha*FP_c + beta*FN_c)
+        FTL    = (1 - mean_c(TI_c))^(1/gamma)
+
+    Args:
+        alpha: FP penalty weight (default 0.3 per paper).
+        beta:  FN penalty weight (default 0.7 per paper — higher => recall-oriented).
+        gamma: focal focusing exponent in [1, 3] (default 4/3 per paper).
+               gamma=1 reduces to plain Tversky loss.
+        smooth: numerical stability (avoid 0/0 when a class is absent in batch).
+    """
+    def __init__(self, alpha: float = 0.3, beta: float = 0.7, gamma: float = 4/3,
+                 smooth: float = 1e-6, **kwargs):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.smooth = smooth
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # logits: (B, C, H, W), target: (B, H, W) with values in [0, C-1]
+        num_classes = logits.shape[1]
+        probs = F.softmax(logits, dim=1)
+        target_1h = F.one_hot(target, num_classes=num_classes).permute(0, 3, 1, 2).float()
+
+        # Sum over batch + spatial dims → per-class soft TP/FP/FN
+        dims = (0, 2, 3)
+        tp = (probs * target_1h).sum(dims)
+        fp = (probs * (1 - target_1h)).sum(dims)
+        fn = ((1 - probs) * target_1h).sum(dims)
+
+        tversky = (tp + self.smooth) / (tp + self.alpha * fp + self.beta * fn + self.smooth)
+        mean_tversky = tversky.mean()
+        return torch.pow(1.0 - mean_tversky, 1.0 / self.gamma)
+
+
+class FocalCrossEntropyLoss(ComposedLoss):
+    name = "FocalCELoss"
+    """
+    Weighted sum of Focal Loss and Cross-Entropy Loss.
+    loss = alpha * focal(x, y) + (1 - alpha) * ce(x, y)
+
+    Both components share the same class `weight` vector by default (dataset imbalance
+    property — does not change between loss terms). `gamma` controls focal focusing.
+    """
+    def __init__(self, gamma: float = 2.0, weight=None, alpha: float = 0.5,
+                 reduction: str = 'mean', **kwargs):
+        super().__init__()
+        self.alpha = alpha
+        self.focal = FocalLoss(gamma=gamma, weight=weight, reduction=reduction)
+        self.ce = CELoss(weight=weight, reduction=reduction)
+
+    @property
+    def component_names(self):
+        return [self.name, "Focal", "CE"]
+
+    def forward(self, x, target):
+        focal_loss = self.focal(x, target)
+        ce_loss = self.ce(x, target)
+        loss = self.alpha * focal_loss + (1 - self.alpha) * ce_loss
+        return loss, torch.cat(
+            (loss.unsqueeze(0), focal_loss.unsqueeze(0), ce_loss.unsqueeze(0))
+        ).detach()
+
+
 class KDLogitsLoss(ComposedLoss):
     name = "KDLLoss"
     """ Knowledge distillation loss, wraps the task loss and distillation loss """
@@ -346,6 +417,8 @@ LOSSES = {
     'cross_entropy': CELoss,
     'dice': DiceLoss,
     'focal': FocalLoss,
+    'focal_ce': FocalCrossEntropyLoss,
+    'focal_tversky': FocalTverskyLoss,
     'variational_information_loss': VariationalInformationLoss,
     'mean_variational_information_loss': VariationalInformationLossMean,
     'scaled_variational_information_loss': VariationalInformationLossScaled,

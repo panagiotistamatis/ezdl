@@ -101,10 +101,14 @@ class PerExampleMetricCallback(Callback):
             preds = preds.student_output
         if isinstance(context.preds, ComposedOutput):
             preds = preds.main
-        for pred, gt, name, padding in zip(preds, context.target, context.input_name, context.padding):
+        paddings = getattr(context, 'padding', [None] * len(context.input_name))
+        for pred, gt, name, padding in zip(preds, context.target, context.input_name, paddings):
             metrics.reset()
             for metric_name, metric_fn in metrics.items():
-                res = metric_fn(pred.unsqueeze(0), gt.unsqueeze(0), [padding])  
+                if padding is not None:
+                    res = metric_fn(pred.unsqueeze(0), gt.unsqueeze(0), [padding])
+                else:
+                    res = metric_fn(pred.unsqueeze(0), gt.unsqueeze(0))
                 self.register(name, metric_name, res)
 
                 

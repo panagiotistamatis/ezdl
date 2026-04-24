@@ -56,6 +56,7 @@ class BaseSGLogger(AbstractSGLogger):
         self.project_name = project_name
         self.experiment_name = experiment_name
         self.storage_location = storage_location
+        self.resumed = resumed
 
         if storage_location.startswith('s3'):
             self.save_checkpoints_remote = save_checkpoints_remote
@@ -114,7 +115,13 @@ class BaseSGLogger(AbstractSGLogger):
                 log_file.write(line + '\n')
 
     @multi_process_safe
-    def add_config(self, tag: str, config: dict):
+    def add_summary(self, metrics: dict):
+        log_lines = ['--------- summary ----------']
+        log_lines.append(json.dumps(metrics, indent=4, default=str))
+        log_lines.append('------- summary end --------')
+        self._write_to_log_file(log_lines)
+
+    def add_config(self, tag: str = None, config: dict = None):
         log_lines = ['--------- config parameters ----------']
         log_lines.append(json.dumps(config, indent=4, default=str))
         log_lines.append('------- config parameters end --------')
@@ -241,7 +248,7 @@ class BaseSGLogger(AbstractSGLogger):
             self.tensorboard_writer.flush()
 
     @multi_process_safe
-    def close(self):
+    def close(self, *args, **kwargs):
         if self.use_tensorboard:
             self.tensorboard_writer.close()
         if self.tensor_board_process is not None:
@@ -268,10 +275,30 @@ class BaseSGLogger(AbstractSGLogger):
             self.model_checkpoints_data_interface.save_remote_checkpoints_file(self.experiment_name, self._local_dir, name)
 
     @multi_process_safe
+    def add_table(self, tag, data, columns, rows):
+        pass
+
+    @multi_process_safe
     def add_plot(self, tag: str, values, xtitle, ytitle, classes_marker=None):
         pass
 
     def add(self, tag: str, obj: Any, global_step: int = None):
+        pass
+
+    @multi_process_safe
+    def add_mask(self, tag: str, image=None, mask_dict=None, global_step: int = 0):
+        pass
+
+    def add_image_mask_sequence(self, name):
+        pass
+
+    def create_image_mask_sequence(self, name):
+        pass
+
+    def add_image_mask_to_sequence(self, sequence_name, name, image, mask_dict):
+        pass
+
+    def add_plotly_figure(self, tag, figure, global_step=None):
         pass
 
     def local_dir(self) -> str:

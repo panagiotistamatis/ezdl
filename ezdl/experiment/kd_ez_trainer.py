@@ -11,16 +11,28 @@ from torch.utils.data import DataLoader
 from super_gradients.common import MultiGPUMode
 from super_gradients.common.abstractions.abstract_logger import get_logger
 from super_gradients.training import utils as core_utils, models
-from super_gradients.training.dataloaders import dataloaders
-from super_gradients.common.exceptions import (
-    ArchitectureKwargsException,
-    UnsupportedKDArchitectureException,
-    InconsistentParamsException,
-    UnsupportedKDModelArgException,
-    TeacherKnowledgeException,
-    UndefinedNumClassesException,
-)
 from super_gradients.training.models import SgModule
+from super_gradients.training.models import SgModule
+from super_gradients.training.dataloaders import dataloaders
+# Custom exceptions for compatibility with super-gradients 3.1.2
+class ArchitectureKwargsException(Exception):
+    pass
+
+class UnsupportedKDArchitectureException(Exception):
+    pass
+
+class InconsistentParamsException(Exception):
+    pass
+
+class UnsupportedKDModelArgException(Exception):
+    pass
+
+class TeacherKnowledgeException(Exception):
+    pass
+
+class UndefinedNumClassesException(Exception):
+    pass
+
 from super_gradients.common.registry.registry import KD_ARCHITECTURES
 from super_gradients.training.models.kd_modules.kd_module import KDModule
 from super_gradients.training.pretrained_models import PRETRAINED_NUM_CLASSES

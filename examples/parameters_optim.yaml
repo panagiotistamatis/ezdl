@@ -1,4 +1,4 @@
-experiment:
+ψexperiment:
   # It contains all the about the grids and the group of runs:
   name: Classification # name of the logger platform experiment
   group: FirstGroup # name of group of experiments for the logger platform
