@@ -99,10 +99,11 @@ class Precision(TPrecision):
     
 class Jaccard(JaccardIndex):
     """JaccardIndex με per-class breakdown + macro average.
-    Logs ως: iou_0, iou_1, ..., iou_<N-1>, iou (macro)."""
+    Logs ως: iou_0, iou_1, ..., iou_<N-1>, iou (macro).
+    Note: torchmetrics 0.8 χρησιμοποιεί `reduction='none'` (όχι `average='none'`)."""
     def __init__(self, *args, **kwargs):
         self.component_names = [f"iou_{i}" for i in range(kwargs['num_classes'])] + ['iou']
-        super().__init__(**kwargs, average="none")
+        super().__init__(**kwargs, reduction="none")
 
     def update(self, preds: Tensor, target: Tensor, padding=None) -> None:
         preds = remove_aux(preds)
