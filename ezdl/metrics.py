@@ -97,6 +97,25 @@ class Precision(TPrecision):
         per_class_precision = super().compute()
         return get_multiclass(self.component_names, per_class_precision)
     
+class Jaccard(JaccardIndex):
+    """JaccardIndex με per-class breakdown + macro average.
+    Logs ως: iou_0, iou_1, ..., iou_<N-1>, iou (macro)."""
+    def __init__(self, *args, **kwargs):
+        self.component_names = [f"iou_{i}" for i in range(kwargs['num_classes'])] + ['iou']
+        super().__init__(**kwargs, average="none")
+
+    def update(self, preds: Tensor, target: Tensor, padding=None) -> None:
+        preds = remove_aux(preds)
+        if padding is not None:
+            for pred, tar in remove_padding(preds, target, padding):
+                super().update(pred, tar)
+        super().update(preds, target)
+
+    def compute(self):
+        per_class_iou = super().compute()
+        return get_multiclass(self.component_names, per_class_iou)
+
+
 class Recall(TRecall):
     def __init__(self, *args, **kwargs):
         self.component_names = [f"recall_{i}" for i in range(kwargs['num_classes'])] + ['recall']
@@ -174,7 +193,8 @@ def get_metric_titles_components_mapping(metrics):
 
 
 METRICS = {
-    'jaccard': JaccardIndex,
+    'jaccard': JaccardIndex,        # raw torchmetrics — δίνει μόνο mIoU (macro)
+    'iou': Jaccard,                 # wrapper με per-class iou_0/1/2 + macro iou
     'auc': AUC,
     'perclassauc': PerClassAUC,
     'f1': F1,
