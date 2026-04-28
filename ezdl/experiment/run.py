@@ -104,6 +104,14 @@ class Run:
             self.dataset = self.seg_trainer.init_dataset \
                 (logger_run.get_params()['dataset_interface'], dataset_params=deepcopy(self.dataset_params))
             checkpoint_path = logger_run.get_local_checkpoint_path(phases)
+            # Fallback: αν ο logger δεν επιστρέψει path (π.χ. test-only σε νέο
+            # wandb run χωρίς training history), διαβάζουμε το resume_path
+            # απευθείας από το YAML (train_params.resume_path).
+            if checkpoint_path is None:
+                tp = self.train_params if hasattr(self.train_params, 'get') else self.train_params.__dict__
+                checkpoint_path = tp.get('resume_path') if hasattr(tp, 'get') else getattr(self.train_params, 'resume_path', None)
+                if checkpoint_path:
+                    print(f"[run.py] Loading external checkpoint from YAML resume_path: {checkpoint_path}")
             self.seg_trainer.init_model(self.params, True, checkpoint_path)
             self.seg_trainer.init_loggers({"in_params": self.params}, self.train_params, run_id=logger_run.id, logger_run=logger_run)
             self._init_carbon_tracker()
