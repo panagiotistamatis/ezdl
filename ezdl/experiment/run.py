@@ -125,7 +125,11 @@ class Run:
     def _launch(self):
         if 'train' in self.phases:
             train(self.seg_trainer, self.train_params, self.dataset, self.train_callbacks, self.val_callbacks)
-        best_metric_val = self.seg_trainer.best_metric.item()
+        # best_metric μπορεί να είναι Python float (αρχική τιμή) όταν τρέχουμε
+        # test-only χωρίς προηγούμενο training. Handle και τις δύο περιπτώσεις.
+        best_metric_val = self.seg_trainer.best_metric
+        if hasattr(best_metric_val, 'item'):
+            best_metric_val = best_metric_val.item()
         if 'test' in self.phases:
             test_metrics = self.seg_trainer.test(**self.test_params, test_phase_callbacks=self.test_callbacks)
             self._save_test_results(test_metrics, best_metric_val)
