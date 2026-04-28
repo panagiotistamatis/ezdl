@@ -378,7 +378,13 @@ class EzTrainer:
 
     def _load_model(self, params):
         model_params = params["model"]
-        input_channels = len(params["dataset"]["channels"])
+        # 'CIR' σε WeedsGalore expandάρεται σε [NIR,G,R] composite (3 channels).
+        # Πρέπει να μετράει σαν 3 ώστε ο model να κατασκευαστεί με σωστό input_channels.
+        _channels_spec = params["dataset"]["channels"]
+        if isinstance(_channels_spec, str):
+            input_channels = 3 if _channels_spec == 'CIR' else 1
+        else:
+            input_channels = sum(3 if c == 'CIR' else 1 for c in _channels_spec)
         output_channels = params["dataset"]["num_classes"]
         arch_params = {
             "input_channels": input_channels,
