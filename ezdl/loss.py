@@ -249,6 +249,104 @@ class FocalTverskyLoss(nn.Module):
         return torch.pow(1.0 - mean_tversky, 1.0 / self.gamma)
 
 
+def _lovasz_grad(gt_sorted: torch.Tensor) -> torch.Tensor:
+    """Computes gradient of the Lovasz extension w.r.t sorted errors.
+    Reference: Berman et al., "The Lovasz-Softmax loss" (CVPR 2018).
+    """
+    p = len(gt_sorted)
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1.0 - intersection / union
+    if p > 1:  # finite differences (cosmetic gradient smoothing)
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+
+def _flatten_probs_targets(probs: torch.Tensor, target: torch.Tensor,
+                           ignore: int = None):
+    """Flatten predictions in (B, C, H, W) and targets in (B, H, W) for Lovász."""
+    B, C, H, W = probs.shape
+    probs = probs.permute(0, 2, 3, 1).contiguous().view(-1, C)  # (B*H*W, C)
+    target = target.view(-1)                                     # (B*H*W,)
+    if ignore is not None:
+        valid = target != ignore
+        probs = probs[valid]
+        target = target[valid]
+    return probs, target
+
+
+class LovaszSoftmaxLoss(nn.Module):
+    """
+    Lovász-Softmax Loss (Berman et al., CVPR 2018, arXiv:1705.08790).
+    Direct surrogate optimization of mean IoU per class.
+
+    Args:
+        classes: 'all' to average over all classes, 'present' to only consider
+                 classes appearing in the batch.
+        ignore_index: label to ignore in loss computation (None = no ignore).
+    """
+    def __init__(self, classes: str = 'present', ignore_index: int = None, **kwargs):
+        super().__init__()
+        self.classes = classes
+        self.ignore_index = ignore_index
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        probs = F.softmax(logits, dim=1)
+        probs_flat, target_flat = _flatten_probs_targets(probs, target, self.ignore_index)
+        return self._lovasz_softmax_flat(probs_flat, target_flat)
+
+    def _lovasz_softmax_flat(self, probs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if probs.numel() == 0:
+            return probs * 0.0
+        C = probs.size(1)
+        losses = []
+        class_to_sum = list(range(C)) if self.classes == 'all' else \
+                       [c for c in range(C) if (target == c).any()]
+        for c in class_to_sum:
+            fg = (target == c).float()
+            if self.classes == 'present' and fg.sum() == 0:
+                continue
+            class_pred = probs[:, c]
+            errors = (fg - class_pred).abs()
+            errors_sorted, perm = torch.sort(errors, 0, descending=True)
+            fg_sorted = fg[perm]
+            losses.append(torch.dot(errors_sorted, _lovasz_grad(fg_sorted)))
+        if len(losses) == 0:
+            return probs.sum() * 0.0
+        return torch.stack(losses).mean()
+
+
+class FocalTverskyLovaszLoss(ComposedLoss):
+    name = "FocalTverskyLovaszLoss"
+    """
+    Weighted sum: w_ft * FocalTversky(x, y) + w_lov * Lovasz(x, y)
+    Default w_ft=w_lov=0.5.
+
+    FT αντιμετωπίζει class imbalance, Lovasz βελτιστοποιεί άμεσα IoU.
+    """
+    def __init__(self, alpha: float = 0.4, beta: float = 0.6, gamma: float = 4/3,
+                 ft_weight: float = 0.5, lov_weight: float = 0.5,
+                 lovasz_classes: str = 'present', ignore_index: int = None, **kwargs):
+        super().__init__()
+        self.ft_weight = ft_weight
+        self.lov_weight = lov_weight
+        self.ft = FocalTverskyLoss(alpha=alpha, beta=beta, gamma=gamma)
+        self.lov = LovaszSoftmaxLoss(classes=lovasz_classes, ignore_index=ignore_index)
+
+    @property
+    def component_names(self):
+        return [self.name, "FocalTversky", "Lovasz"]
+
+    def forward(self, x, target):
+        ft_loss = self.ft(x, target)
+        lov_loss = self.lov(x, target)
+        loss = self.ft_weight * ft_loss + self.lov_weight * lov_loss
+        return loss, torch.cat(
+            (loss.unsqueeze(0), ft_loss.unsqueeze(0), lov_loss.unsqueeze(0))
+        ).detach()
+
+
 class FocalCrossEntropyLoss(ComposedLoss):
     name = "FocalCELoss"
     """
@@ -419,6 +517,8 @@ LOSSES = {
     'focal': FocalLoss,
     'focal_ce': FocalCrossEntropyLoss,
     'focal_tversky': FocalTverskyLoss,
+    'lovasz_softmax': LovaszSoftmaxLoss,
+    'focal_tversky_lovasz': FocalTverskyLovaszLoss,
     'variational_information_loss': VariationalInformationLoss,
     'mean_variational_information_loss': VariationalInformationLossMean,
     'scaled_variational_information_loss': VariationalInformationLossScaled,
