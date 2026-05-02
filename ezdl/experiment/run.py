@@ -67,7 +67,18 @@ class Run:
             )
             self.dataset = self.seg_trainer.init_dataset \
                     (params['dataset_interface'], dataset_params=deepcopy(self.dataset_params))
-            self.seg_trainer.init_model(params, False, None)
+
+            # Check για external resume_path στο YAML (test-only / fresh-run resume scenarios)
+            yaml_tp = params.get('train_params', {}) if isinstance(params, dict) else {}
+            yaml_resume = yaml_tp.get('resume_path') if isinstance(yaml_tp, dict) else None
+            if isinstance(yaml_resume, list):
+                yaml_resume = yaml_resume[0] if yaml_resume else None
+            print(f"[run.py:init DEBUG] YAML resume_path = {yaml_resume!r}", flush=True)
+            if yaml_resume and os.path.exists(yaml_resume):
+                print(f"[run.py:init] >>> Loading external checkpoint: {yaml_resume}", flush=True)
+                self.seg_trainer.init_model(params, True, yaml_resume)
+            else:
+                self.seg_trainer.init_model(params, False, None)
             self.seg_trainer.init_loggers({"in_params": params}, deepcopy(self.train_params))
             logger.info(f"Input params: \n\n {dict_to_yaml_string(params)}")
             if params.get('print_model_summary', True):
