@@ -104,14 +104,25 @@ class Run:
             self.dataset = self.seg_trainer.init_dataset \
                 (logger_run.get_params()['dataset_interface'], dataset_params=deepcopy(self.dataset_params))
             checkpoint_path = logger_run.get_local_checkpoint_path(phases)
-            # Fallback: αν ο logger δεν επιστρέψει path (π.χ. test-only σε νέο
-            # wandb run χωρίς training history), διαβάζουμε το resume_path
-            # απευθείας από το YAML (train_params.resume_path).
-            if checkpoint_path is None:
-                tp = self.train_params if hasattr(self.train_params, 'get') else self.train_params.__dict__
-                checkpoint_path = tp.get('resume_path') if hasattr(tp, 'get') else getattr(self.train_params, 'resume_path', None)
-                if checkpoint_path:
-                    print(f"[run.py] Loading external checkpoint from YAML resume_path: {checkpoint_path}")
+            print(f"[run.py DEBUG] logger checkpoint_path = {checkpoint_path!r}", flush=True)
+
+            # Fallback to YAML's train_params.resume_path αν logger path missing/invalid.
+            # Διαβάζουμε directly από self.params (raw dict) αντί self.train_params (HpmStruct)
+            # για να αποφύγουμε access-quirks.
+            if not checkpoint_path or not os.path.exists(checkpoint_path):
+                yaml_tp = self.params.get('train_params', {}) if isinstance(self.params, dict) else {}
+                yaml_resume = yaml_tp.get('resume_path') if isinstance(yaml_tp, dict) else None
+                # YAML grids wrap single values σε list — unwrap
+                if isinstance(yaml_resume, list):
+                    yaml_resume = yaml_resume[0] if yaml_resume else None
+                print(f"[run.py DEBUG] YAML train_params.resume_path = {yaml_resume!r}", flush=True)
+                if yaml_resume and os.path.exists(yaml_resume):
+                    checkpoint_path = yaml_resume
+                    print(f"[run.py] >>> Using YAML resume_path: {checkpoint_path}", flush=True)
+                else:
+                    print(f"[run.py WARN] YAML resume_path δεν υπάρχει ή άκυρο", flush=True)
+
+            print(f"[run.py DEBUG] FINAL checkpoint_path passed to init_model = {checkpoint_path!r}", flush=True)
             self.seg_trainer.init_model(self.params, True, checkpoint_path)
             self.seg_trainer.init_loggers({"in_params": self.params}, self.train_params, run_id=logger_run.id, logger_run=logger_run)
             self._init_carbon_tracker()
