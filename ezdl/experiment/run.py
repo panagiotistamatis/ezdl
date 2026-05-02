@@ -55,6 +55,17 @@ class Run:
         self.carbon_tracker.start()
 
     def init(self, params: dict):
+        # Hard-trace στο /tmp/ezdl_init_trace.log ώστε να γνωρίζουμε σίγουρα
+        # ότι αυτή η μέθοδος εκτελείται.
+        try:
+            with open('/tmp/ezdl_init_trace.log', 'a') as _f:
+                _f.write(f"[Run.init called] params keys = {list(params.keys()) if isinstance(params, dict) else type(params).__name__}\n")
+        except Exception:
+            pass
+        import sys
+        sys.stderr.write("[run.py:init STDERR] METHOD ENTERED\n")
+        sys.stderr.flush()
+        print("[run.py:init STDOUT] METHOD ENTERED", flush=True)
         self.seg_trainer = None
         try:
             self.parse_params(params)
