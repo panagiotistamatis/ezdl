@@ -251,8 +251,58 @@ class MiT(nn.Module):
         return all_hidden_states
 
 
+class HSwish(nn.Module):
+    """h-swish activation (Howard et al., MobileNetV3) — used στο Coordinate Attention paper."""
+    def forward(self, x):
+        return x * F.relu6(x + 3.0, inplace=False) / 6.0
+
+
+class CoordinateAttention(nn.Module):
+    """Coordinate Attention (Hou et al., CVPR 2021 — arXiv 2103.02907).
+
+    Channel + spatial-position attention. Pool feature map κατά H και W
+    separately (instead of global pool used by SE), encode location info,
+    και επιστρέφει per-position attention weights.
+
+    Args:
+        in_channels: input feature channels
+        reduction: bottleneck reduction ratio (paper default 32)
+    """
+    def __init__(self, in_channels: int, reduction: int = 32):
+        super().__init__()
+        mid = max(8, in_channels // reduction)
+        # Direction-specific pooling (key insight of paper)
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))  # (B, C, H, 1)
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))  # (B, C, 1, W)
+        # Shared bottleneck after concat (eq. 7 paper)
+        self.conv1 = nn.Conv2d(in_channels, mid, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(mid)
+        self.act = HSwish()
+        # Per-direction projections (eq. 8 paper)
+        self.conv_h = nn.Conv2d(mid, in_channels, kernel_size=1, bias=False)
+        self.conv_w = nn.Conv2d(mid, in_channels, kernel_size=1, bias=False)
+
+    def forward(self, x: Tensor) -> Tensor:
+        identity = x
+        _, _, H, W = x.shape
+        # Pool κατά H (keep height) και W (keep width)
+        x_h = self.pool_h(x)                          # (B, C, H, 1)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)      # (B, C, W, 1)
+        # Concat κατά spatial dim και κάνε bottleneck
+        y = torch.cat([x_h, x_w], dim=2)              # (B, C, H+W, 1)
+        y = self.act(self.bn1(self.conv1(y)))
+        # Split back & project ανά direction
+        x_h, x_w = torch.split(y, [H, W], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)                 # back to (B, mid, 1, W)
+        a_h = torch.sigmoid(self.conv_h(x_h))         # (B, C, H, 1)
+        a_w = torch.sigmoid(self.conv_w(x_w))         # (B, C, 1, W)
+        # Apply attention (broadcasts to full H×W)
+        return identity * a_h * a_w
+
+
 class FusionBlock(nn.Module):
-    def __init__(self, channels, fusion_type="conv_sum", p_local=0.1, p_glob=0.5):
+    def __init__(self, channels, fusion_type="conv_sum", p_local=0.1, p_glob=0.5,
+                 coord_attn_reduction: int = 32):
         super().__init__()
         if fusion_type == "squeeze_excite":
             self.conv = ConvModule(channels * 2, channels, k=1, p=0)
@@ -264,6 +314,15 @@ class FusionBlock(nn.Module):
                 nn.Sigmoid()
             )
             self.forward = self.squeeze_forward
+        elif fusion_type == "coord_attn":
+            # Channel + spatial-position attention (Hou et al., CVPR 2021).
+            # Drop-in replacement for SE με extra spatial awareness.
+            self.conv = ConvModule(channels * 2, channels, k=1, p=0)
+            self.coord_attn = CoordinateAttention(
+                in_channels=channels * 2,
+                reduction=coord_attn_reduction,
+            )
+            self.forward = self.coord_attn_forward
         elif fusion_type == "conv_sum_drop" or fusion_type == "conv_sum":
             self.conv1 = ConvModule(channels, channels, k=1, p=0)
             self.conv2 = ConvModule(channels, channels, k=1, p=0)
@@ -281,7 +340,7 @@ class FusionBlock(nn.Module):
         y1 = x1 + self.drop(self.conv1(x1))
         y2 = x2 + self.drop(self.conv2(x2))
         return sum(self.multi_drop([y1, y2]))
-    
+
     def squeeze_forward(self, x1, x2):
         x = torch.cat([x1, x2], dim=1)
         gap = self.squeeze(x)
@@ -289,6 +348,12 @@ class FusionBlock(nn.Module):
         gap = self.excite(gap)
         gap = rearrange(gap, 'b (h w c) -> b c h w', h=1, w=1)
         x = x * gap + x
+        return self.conv(x)
+
+    def coord_attn_forward(self, x1, x2):
+        """Concat 2 streams → Coordinate Attention → project back to single channel dim."""
+        x = torch.cat([x1, x2], dim=1)
+        x = self.coord_attn(x) + x   # residual (same as SE forward pattern)
         return self.conv(x)
 
 
