@@ -156,10 +156,21 @@ class MiT(nn.Module):
             self.partial_forward = self.hug_partial_forward
             self.n_blocks = n_blocks
 
-    def init_pretrained_weights(self, weights=None, channels_to_load=None):
+    def init_pretrained_weights(self, weights=None, channels_to_load=None, channel_scales=None):
+        """Load pretrained weights with optional per-channel scaling.
+
+        Args:
+            weights: pretrained state_dict. If None, loads from self.url.
+            channels_to_load: list of channel labels (R/G/B/NIR/RE) ή None for all.
+            channel_scales: optional list of floats (same length as channels_to_load).
+                            Multiplies the first-conv weights per channel — useful για
+                            I3D-style scaling όταν αρχικοποιούμε non-RGB channels από
+                            RGB pretrained (π.χ. NIR ← 0.6·G_pretrained).
+                            None ή λίστα με 1.0s → καμία scaling (original behavior).
+        """
         first_conv = 'encoder.patch_embeddings.0.proj.weight'
         weights = SegformerModel.from_pretrained(self.url).state_dict() if weights is None else weights
-        
+
         if channels_to_load is None:
             channels_to_load = slice(self.config.num_channels)
         else:
@@ -174,12 +185,24 @@ class MiT(nn.Module):
         num_to_load = len(channels_to_load) if isinstance(channels_to_load, list) else channels_to_load.stop
 
         weights[first_conv] = weights[first_conv][:, channels_to_load]
+
+        # I3D-style per-channel scaling (optional)
+        if channel_scales is not None and isinstance(channels_to_load, list):
+            if len(channel_scales) != len(channels_to_load):
+                raise ValueError(
+                    f"channel_scales length ({len(channel_scales)}) μη συμβατό με "
+                    f"channels_to_load length ({len(channels_to_load)})"
+                )
+            for i, scale in enumerate(channel_scales):
+                if scale != 1.0:
+                    weights[first_conv][:, i] = weights[first_conv][:, i] * float(scale)
+
         if num_to_load < self.config.num_channels:
             remaining = self.config.num_channels - num_to_load
             weights[first_conv] = torch.cat([
                 weights[first_conv],
                 self.encoder.state_dict()[first_conv][:, -remaining:]], dim=1)
-            
+
         self.encoder.load_state_dict(weights)
 
     def hug_forward(self, x):
