@@ -347,6 +347,105 @@ class FocalTverskyLovaszLoss(ComposedLoss):
         ).detach()
 
 
+class BoundaryDoULoss(nn.Module):
+    """
+    Boundary Difference over Union Loss (Sun, Luo & Li — MICCAI 2023, arXiv:2308.00220).
+
+    Region-based loss που adaptively εμφασίζει τα boundaries. Per-class adaptive
+    parameter α υπολογίζεται από το boundary-to-area ratio: μικρά/λεπτά αντικείμενα
+    (high boundary ratio) παίρνουν διαφορετική penalty από μεγάλα solid regions.
+
+    Faithful port του official implementation (github.com/sunfan-bvb/BoundaryDoULoss):
+      α = 2·(1 - C/S) - 1,  truncated σε max 0.8
+      loss_c = (z + y - 2·i) / (z + y - (1+α)·i)
+    όπου C = boundary pixel count, S = foreground area, i/y/z = soft intersection/sums.
+    """
+    def __init__(self, n_classes: int = 3, alpha_max: float = 0.8,
+                 smooth: float = 1e-5, **kwargs):
+        super().__init__()
+        self.n_classes = n_classes
+        self.alpha_max = alpha_max
+        self.smooth = smooth
+
+    def _one_hot(self, target: torch.Tensor) -> torch.Tensor:
+        # target: (B, H, W) → (B, C, H, W)
+        return F.one_hot(target, num_classes=self.n_classes).permute(0, 3, 1, 2).float()
+
+    def _adaptive_size(self, score: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # score, target: (B, H, W) — single class probability map + binary mask
+        # Cross-shaped kernel μετράει self + 4-connected neighbors
+        kernel = torch.tensor([[0., 1., 0.], [1., 1., 1.], [0., 1., 0.]],
+                              device=target.device, dtype=target.dtype)
+        kernel = kernel.unsqueeze(0).unsqueeze(0)  # (1,1,3,3)
+
+        tgt = target.unsqueeze(1)  # (B,1,H,W)
+        neighbor_count = F.conv2d(tgt, kernel, padding=1)  # (B,1,H,W)
+        Y = (neighbor_count * tgt).squeeze(1)  # keep only foreground pixels
+        # value 5 = pixel + all 4 neighbors foreground → interior pixel, όχι boundary
+        Y = torch.where(Y == 5, torch.zeros_like(Y), Y)
+        C = torch.count_nonzero(Y)          # boundary pixel count
+        S = torch.count_nonzero(target)     # total foreground area
+
+        alpha = 1.0 - (C + self.smooth) / (S + self.smooth)
+        alpha = 2.0 * alpha - 1.0
+        # truncate (paper recommends max 0.8 για stability σε ορισμένα datasets)
+        alpha = torch.clamp(alpha, max=self.alpha_max)
+
+        intersect = torch.sum(score * target)
+        y_sum = torch.sum(target * target)
+        z_sum = torch.sum(score * score)
+
+        loss = (z_sum + y_sum - 2.0 * intersect + self.smooth) / \
+               (z_sum + y_sum - (1.0 + alpha) * intersect + self.smooth)
+        return loss
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        probs = F.softmax(logits, dim=1)
+        target_1h = self._one_hot(target)
+        loss = 0.0
+        for c in range(self.n_classes):
+            loss = loss + self._adaptive_size(probs[:, c], target_1h[:, c])
+        return loss / self.n_classes
+
+
+class FocalTverskyLovaszBoundaryLoss(ComposedLoss):
+    name = "FocalTverskyLovaszBoundaryLoss"
+    """
+    3-way weighted sum:
+        loss = w_ft·FocalTversky + w_lov·Lovasz + w_bdou·BoundaryDoU
+
+    FT → class imbalance, Lovasz → direct IoU, BoundaryDoU → boundary precision.
+    Default weights: 0.4 / 0.4 / 0.2.
+    """
+    def __init__(self, alpha: float = 0.4, beta: float = 0.6, gamma: float = 4/3,
+                 ft_weight: float = 0.4, lov_weight: float = 0.4, bdou_weight: float = 0.2,
+                 lovasz_classes: str = 'present', ignore_index: int = None,
+                 num_classes: int = 3, **kwargs):
+        super().__init__()
+        self.ft_weight = ft_weight
+        self.lov_weight = lov_weight
+        self.bdou_weight = bdou_weight
+        self.ft = FocalTverskyLoss(alpha=alpha, beta=beta, gamma=gamma)
+        self.lov = LovaszSoftmaxLoss(classes=lovasz_classes, ignore_index=ignore_index)
+        self.bdou = BoundaryDoULoss(n_classes=num_classes)
+
+    @property
+    def component_names(self):
+        return [self.name, "FocalTversky", "Lovasz", "BoundaryDoU"]
+
+    def forward(self, x, target):
+        ft_loss = self.ft(x, target)
+        lov_loss = self.lov(x, target)
+        bdou_loss = self.bdou(x, target)
+        loss = (self.ft_weight * ft_loss
+                + self.lov_weight * lov_loss
+                + self.bdou_weight * bdou_loss)
+        return loss, torch.cat(
+            (loss.unsqueeze(0), ft_loss.unsqueeze(0),
+             lov_loss.unsqueeze(0), bdou_loss.unsqueeze(0))
+        ).detach()
+
+
 class FocalCrossEntropyLoss(ComposedLoss):
     name = "FocalCELoss"
     """
@@ -519,6 +618,8 @@ LOSSES = {
     'focal_tversky': FocalTverskyLoss,
     'lovasz_softmax': LovaszSoftmaxLoss,
     'focal_tversky_lovasz': FocalTverskyLovaszLoss,
+    'boundary_dou': BoundaryDoULoss,
+    'focal_tversky_lovasz_boundary': FocalTverskyLovaszBoundaryLoss,
     'variational_information_loss': VariationalInformationLoss,
     'mean_variational_information_loss': VariationalInformationLossMean,
     'scaled_variational_information_loss': VariationalInformationLossScaled,
