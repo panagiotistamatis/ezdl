@@ -93,6 +93,10 @@ from super_gradients.training.utils.sg_trainer_utils import (
 from super_gradients.training.utils.utils import fuzzy_idx_in_list
 from super_gradients.training.utils.weight_averaging_utils import ModelWeightAveraging
 
+# Import custom optimizers — triggers registration στο SG OPTIMIZERS registry
+# (κάνει διαθέσιμο το optimizer: [ADOPT] μέσω YAML)
+import ezdl.optimizers  # noqa: F401
+
 
 import torch
 from super_gradients.training.utils.checkpoint_utils import load_checkpoint_to_model
