@@ -323,6 +323,19 @@ class FusionBlock(nn.Module):
                 reduction=coord_attn_reduction,
             )
             self.forward = self.coord_attn_forward
+        elif fusion_type == "gated":
+            # Gated adaptive fusion (inspired by Galymzhankyzy 2025 gated FPN).
+            # Learn a per-pixel, per-channel gate g from both streams and form a
+            # convex combination: out = g * conv1(x1) + (1 - g) * conv2(x2).
+            # Lets the network adaptively decide, per location, how much of the
+            # main vs side stream to trust — vs the fixed sum of conv_sum.
+            self.conv1 = ConvModule(channels, channels, k=1, p=0)
+            self.conv2 = ConvModule(channels, channels, k=1, p=0)
+            self.gate = nn.Sequential(
+                nn.Conv2d(channels * 2, channels, kernel_size=1),
+                nn.Sigmoid(),
+            )
+            self.forward = self.gated_forward
         elif fusion_type == "conv_sum_drop" or fusion_type == "conv_sum":
             self.conv1 = ConvModule(channels, channels, k=1, p=0)
             self.conv2 = ConvModule(channels, channels, k=1, p=0)
@@ -335,6 +348,10 @@ class FusionBlock(nn.Module):
 
     def base_forward(self, x1, x2):
         return self.conv1(x1) + self.conv2(x2)
+
+    def gated_forward(self, x1, x2):
+        g = self.gate(torch.cat([x1, x2], dim=1))
+        return g * self.conv1(x1) + (1 - g) * self.conv2(x2)
 
     def drop_forward(self, x1, x2):
         y1 = x1 + self.drop(self.conv1(x1))
