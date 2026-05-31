@@ -149,7 +149,11 @@ class LawinHead(nn.Module):
         self.low_level_fuse = ConvModule(embed_dim+48, embed_dim)
         self.linear_pred = nn.Conv2d(embed_dim, num_classes, 1)
         self.dropout = nn.Dropout2d(0.1)
-    
+        # Optional CLIP cross-attention module — assigned externally από το
+        # BaseSplitLawin αν use_clip=True στο YAML. Εφαρμόζεται στα 256-channel
+        # fused features ΠΡΙΝ το linear_pred. None → no-op (backward compatible).
+        self.clip_module = None
+
     def get_lawin_att_feats(self, x: Tensor, patch_size: int, ratios: list, step: str = "") -> list:
         _, _, H, W = x.shape
         rem_h = (H % patch_size)
@@ -202,6 +206,10 @@ class LawinHead(nn.Module):
         c1 = self.linear_c1(features[0]).permute(0, 2, 1).reshape(B, -1, *features[0].shape[-2:])
         output = F.interpolate(output, size=features[0].shape[-2:], mode='bilinear', align_corners=False)
         fused = self.low_level_fuse(torch.cat([output, c1], dim=1))
+
+        # Optional CLIP-guided cross-attention στα fused features πριν το classifier
+        if self.clip_module is not None:
+            fused = self.clip_module(fused)
 
         seg = self.linear_pred(self.dropout(fused))
         return seg
