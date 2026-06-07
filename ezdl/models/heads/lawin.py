@@ -118,25 +118,34 @@ class ConvModule(nn.Module):
 
 
 class LawinHead(nn.Module):
-    def __init__(self, in_channels: list, embed_dim=512, num_classes=19) -> None:
+    def __init__(self, in_channels: list, embed_dim=512, num_classes=19,
+                 ratios=None) -> None:
         super().__init__()
         for i, dim in enumerate(in_channels):
             self.add_module(f"linear_c{i+1}", MLP(dim, 48 if i == 0 else embed_dim))
 
-        self.ratios = RATIOS
+        # Configurable ratios για multi-scale Lawin attention.
+        # Default [8, 4, 2] (paper-original, σχεδιασμένο για 256×256 input).
+        # Για 608×608 input ίσως αξίζει R=12 αντί R=8 (coverage 42% → 63%).
+        self.ratios = ratios if ratios is not None else RATIOS
+        n_ratios = len(self.ratios)
         if embed_dim >= 256:
-            heads = [64, 16, 4]
+            base_heads = [64, 16, 4]
         elif embed_dim >= 64:
-            heads = [embed_dim//4, embed_dim//16, embed_dim//64]
+            base_heads = [embed_dim//4, embed_dim//16, embed_dim//64]
         else:
-            heads = [embed_dim//4, embed_dim//8, embed_dim//16]
+            base_heads = [embed_dim//4, embed_dim//8, embed_dim//16]
+        # Map heads για τις τρέχουσες ratios (sorted descending → coarse-to-fine).
+        # Αν έχουμε >3 ratios, το πρώτο head επαναλαμβάνεται για τα νέα coarse levels.
+        if n_ratios <= len(base_heads):
+            heads = base_heads[:n_ratios]
+        else:
+            heads = [base_heads[0]] * (n_ratios - len(base_heads)) + base_heads
 
-        self.lawin_8 = LawinAttn(embed_dim, heads[0])
-        self.lawin_4 = LawinAttn(embed_dim, heads[1])
-        self.lawin_2 = LawinAttn(embed_dim, heads[2])
-        self.ds_8 = PatchEmbed(8, embed_dim, embed_dim)
-        self.ds_4 = PatchEmbed(4, embed_dim, embed_dim)
-        self.ds_2 = PatchEmbed(2, embed_dim, embed_dim)
+        # Dynamic module creation για κάθε ratio (self.ds_{r}, self.lawin_{r})
+        for r, h in zip(self.ratios, heads):
+            self.add_module(f"lawin_{r}", LawinAttn(embed_dim, h))
+            self.add_module(f"ds_{r}", PatchEmbed(r, embed_dim, embed_dim))
     
         self.image_pool = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -144,7 +153,8 @@ class LawinHead(nn.Module):
         )
         self.linear_fuse = ConvModule(embed_dim*3, embed_dim)
         self.short_path = ConvModule(embed_dim, embed_dim)
-        self.cat = ConvModule(embed_dim*5, embed_dim)
+        # cat concatenates: short_path + image_pool + (n_ratios × lawin features)
+        self.cat = ConvModule(embed_dim * (2 + n_ratios), embed_dim)
 
         self.low_level_fuse = ConvModule(embed_dim+48, embed_dim)
         self.linear_pred = nn.Conv2d(embed_dim, num_classes, 1)
