@@ -119,8 +119,11 @@ class ConvModule(nn.Module):
 
 class LawinHead(nn.Module):
     def __init__(self, in_channels: list, embed_dim=512, num_classes=19,
-                 ratios=None) -> None:
+                 ratios=None, patch_size: int = 8) -> None:
         super().__init__()
+        # Lawin query patch size (default 8 — paper original).
+        # Για 608×608 input ίσως αξίζει P=12 (less queries, larger receptive area).
+        self.patch_size = patch_size
         for i, dim in enumerate(in_channels):
             self.add_module(f"linear_c{i+1}", MLP(dim, 48 if i == 0 else embed_dim))
 
@@ -209,7 +212,7 @@ class LawinHead(nn.Module):
         ## Lawin attention spatial pyramid pooling
         feat_short = self.short_path(feat)
         feat_pool = F.interpolate(self.image_pool(feat), size=(H, W), mode='bilinear', align_corners=False)
-        feat_lawin = self.get_lawin_att_feats(feat, 8, self.ratios)
+        feat_lawin = self.get_lawin_att_feats(feat, self.patch_size, self.ratios)
         output = self.cat(torch.cat([feat_short, feat_pool, *feat_lawin], dim=1))
 
         ## Low-level feature enhancement
