@@ -145,9 +145,11 @@ class LawinHead(nn.Module):
         else:
             heads = [base_heads[0]] * (n_ratios - len(base_heads)) + base_heads
 
-        # Dynamic module creation για κάθε ratio (self.ds_{r}, self.lawin_{r})
+        # Dynamic module creation για κάθε ratio (self.ds_{r}, self.lawin_{r}).
+        # LawinAttn χρειάζεται patch_size για το position_mixing linear layer
+        # (patch_size² → patch_size²). Αν patch_size!=8, hardcoded default 8 σπάει.
         for r, h in zip(self.ratios, heads):
-            self.add_module(f"lawin_{r}", LawinAttn(embed_dim, h))
+            self.add_module(f"lawin_{r}", LawinAttn(embed_dim, h, patch_size=self.patch_size))
             self.add_module(f"ds_{r}", PatchEmbed(r, embed_dim, embed_dim))
     
         self.image_pool = nn.Sequential(
